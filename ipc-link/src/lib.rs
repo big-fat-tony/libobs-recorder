@@ -45,11 +45,20 @@ impl IpcLinkMaster {
     pub fn new(executable: impl AsRef<Path>) -> io::Result<Self> {
         let executable = executable.as_ref().canonicalize()?;
 
-        let mut child_process = Command::new(executable.as_os_str())
+        let mut command = Command::new(executable.as_os_str());
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .current_dir(executable.parent().unwrap_or_else(|| Path::new(&Component::RootDir)))
-            .spawn()?;
+            .current_dir(executable.parent().unwrap_or_else(|| Path::new(&Component::RootDir)));
+        // Don't pop a console window (and steal focus) when spawning the
+        // recorder subprocess, even from a console-subsystem debug build.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child_process = command.spawn()?;
 
         Ok(Self {
             tx: BufWriter::new(child_process.stdin.take().unwrap()),
