@@ -2,6 +2,7 @@ pub use adapter::{Adapter, AdapterId, AdapterType};
 pub use audio::AudioSource;
 pub use encoders::Encoder;
 pub use framerate::Framerate;
+pub use overlay::{Corner, TextOverlay};
 pub use rate_control::RateControl;
 pub use resolution::{Resolution, StdResolution};
 pub use window::Window;
@@ -10,6 +11,7 @@ mod adapter;
 mod audio;
 mod encoders;
 mod framerate;
+mod overlay;
 mod rate_control;
 mod resolution;
 mod window;
@@ -26,6 +28,8 @@ pub struct RecorderSettings {
     pub(crate) rate_control: Option<RateControl>,
     pub(crate) audio_source: Option<AudioSource>,
     pub(crate) encoder: Option<Encoder>,
+    #[serde(default)]
+    pub(crate) text_overlay: Option<TextOverlay>,
 }
 
 impl RecorderSettings {
@@ -52,6 +56,7 @@ impl RecorderSettings {
             rate_control: None,
             audio_source: None,
             encoder: None,
+            text_overlay: None,
         }
     }
 
@@ -117,5 +122,19 @@ impl RecorderSettings {
 
     pub fn get_encoder(&self) -> Option<&Encoder> {
         self.encoder.as_ref()
+    }
+
+    /// Burn a text overlay into the recording. `None` (the default) records
+    /// the bare window.
+    pub fn set_text_overlay(&mut self, overlay: TextOverlay) {
+        self.text_overlay = Some(overlay);
+    }
+
+    pub fn clear_text_overlay(&mut self) {
+        self.text_overlay = None;
+    }
+
+    pub fn get_text_overlay(&self) -> Option<&TextOverlay> {
+        self.text_overlay.as_ref()
     }
 }

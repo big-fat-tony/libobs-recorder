@@ -1,8 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::{env, error, fs, path};
 
-use fs_extra::dir;
-
 // const NEWEST_VERSION: &str = "32.0.4";
 const NEWEST_VERSION: &str = "30.2.2";
 pub const VERSION: &str = {
@@ -57,10 +55,36 @@ fn build(path: Option<&path::Path>, version: &str) -> Result<(), Error> {
     let target_path = consumer_crate_output_dir.join("libobs");
 
     fs::create_dir_all(target_path.parent().unwrap())?;
+    copy_dir_tolerant(&bin_res_dir, &target_path)?;
 
-    let copy_options = dir::CopyOptions::new().overwrite(true).content_only(true);
-    dir::copy(bin_res_dir, target_path, &copy_options)?;
+    Ok(())
+}
 
+/// Recursively copy `from` into `to`, overwriting. A file that cannot be
+/// overwritten because it is in use (e.g. `graphics-hook64.dll` while the
+/// captured game is still running with the hook injected) is skipped when the
+/// existing copy already has the same size; any other error is propagated.
+fn copy_dir_tolerant(from: &path::Path, to: &path::Path) -> Result<(), Error> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_tolerant(&src, &dst)?;
+            continue;
+        }
+        if let Err(e) = fs::copy(&src, &dst) {
+            let same_size = match (fs::metadata(&src), fs::metadata(&dst)) {
+                (Ok(a), Ok(b)) => a.len() == b.len(),
+                _ => false,
+            };
+            if !same_size {
+                return Err(format!("copying {} -> {}: {e}", src.display(), dst.display()).into());
+            }
+            println!("cargo:warning=build-helper: {} is in use; keeping the existing copy", dst.display());
+        }
+    }
     Ok(())
 }
 

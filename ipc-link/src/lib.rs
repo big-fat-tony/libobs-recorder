@@ -20,6 +20,8 @@ pub enum IpcCommand {
     StartRecording,
     StopRecording,
     IsRecording,
+    /// Replace the text of the configured overlay (see `RecorderSettings::set_text_overlay`).
+    SetOverlayText(String),
     Shutdown,
     Exit,
 }

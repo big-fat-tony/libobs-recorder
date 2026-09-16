@@ -87,6 +87,14 @@ fn main() {
                 Some(IpcResponse::Err("recorder not initialized".into()))
             }
         }
+        IpcCommand::SetOverlayText(text) => {
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.set_overlay_text(&text);
+                Some(IpcResponse::Ok)
+            } else {
+                Some(IpcResponse::Err("recorder not initialized".into()))
+            }
+        }
         IpcCommand::Shutdown => {
             // stop recording and drop recorder
             if let Some(mut recorder) = recorder.take() {

@@ -4,7 +4,9 @@
 **OLD VERSIONS ARE AVAILABLE BY COMPILING WITH THE LIBOBS_RECORDER_VERSION ENVIRONMENT VARIABLE SET TO THE DESIRED VERSION**
 
 This is a rust library for recording using the [libobs library]("https://github.com/obsproject/obs-studio").
-The current version supports only a very limited amount of options and only uses the windows game_capture plugin.
+The current version supports only a very limited amount of options and only uses the windows game_capture plugin,
+plus an optional text overlay (`text_gdiplus`) whose text can be replaced while recording
+(`RecorderSettings::set_text_overlay` / `Recorder::set_overlay_text`).
 
 The libobs-sys subcrate is up-to-date with the newest Obs release.
 

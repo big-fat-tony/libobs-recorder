@@ -1,7 +1,8 @@
 use std::ffi::CString;
 
 use libobs_sys::{
-    obs_data, obs_data_create, obs_data_release, obs_data_set_bool, obs_data_set_int, obs_data_set_string,
+    obs_data, obs_data_create, obs_data_release, obs_data_set_bool, obs_data_set_int, obs_data_set_obj,
+    obs_data_set_string,
 };
 
 /*
@@ -46,6 +47,13 @@ impl ObsData {
     pub fn set_bool(&mut self, name: impl Into<String>, value: impl Into<bool>) {
         let n = CString::new(name.into()).unwrap();
         unsafe { obs_data_set_bool(self.obs_data, n.as_ptr(), value.into()) };
+        self.c_strings.push(n);
+    }
+
+    /// Nested object; libobs takes its own reference so `value` can be dropped.
+    pub fn set_obj(&mut self, name: impl Into<String>, value: &ObsData) {
+        let n = CString::new(name.into()).unwrap();
+        unsafe { obs_data_set_obj(self.obs_data, n.as_ptr(), value.obs_data) };
         self.c_strings.push(n);
     }
 }

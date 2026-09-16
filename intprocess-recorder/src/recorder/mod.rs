@@ -7,7 +7,10 @@ use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
-use crate::settings::{Adapter, AdapterId, AudioSource, Encoder, Framerate, RateControl, RecorderSettings, Resolution};
+use crate::settings::{
+    Adapter, AdapterId, AudioSource, Corner, Encoder, Framerate, RateControl, RecorderSettings, Resolution,
+    TextOverlay,
+};
 use get::Get;
 use obs_data::ObsData;
 
@@ -29,6 +32,8 @@ const OUTPUT: *const i8 = c"output".as_ptr().cast();
 const VIDEO_ENCODER: *const i8 = c"video_encoder".as_ptr().cast();
 const AUDIO_ENCODER: *const i8 = c"audio_encoder".as_ptr().cast();
 const VIDEO_SOURCE: *const i8 = c"video_source".as_ptr().cast();
+const SCENE: *const i8 = c"scene".as_ptr().cast();
+const OVERLAY_SOURCE: *const i8 = c"overlay_source".as_ptr().cast();
 const AUDIO_SOURCE1: *const i8 = c"audio_source1".as_ptr().cast();
 const AUDIO_SOURCE2: *const i8 = c"audio_source2".as_ptr().cast();
 const AUDIO_SOURCE3: *const i8 = c"audio_source3".as_ptr().cast();
@@ -59,6 +64,9 @@ pub struct InpRecorder {
     video_encoder: Cell<NonNull<libobs_sys::obs_encoder>>,
     audio_encoder: NonNull<libobs_sys::obs_encoder>,
     video_source: NonNull<libobs_sys::obs_source>,
+    /// The window capture plus the (optional) text overlay, composited.
+    scene: NonNull<libobs_sys::obs_scene>,
+    overlay_source: NonNull<libobs_sys::obs_source>,
     audio_source1: NonNull<libobs_sys::obs_source>,
     audio_source2: NonNull<libobs_sys::obs_source>,
     audio_source3: NonNull<libobs_sys::obs_source>,
@@ -176,7 +184,31 @@ impl InpRecorder {
                 std::ptr::null_mut(),
             )
         };
-        unsafe { libobs_sys::obs_set_output_source(VIDEO_CHANNEL, video_source) };
+
+        // CREATE OVERLAY SOURCE (hidden until a TextOverlay is configured)
+        let overlay_source = unsafe {
+            libobs_sys::obs_source_create(
+                get.c_str("text_gdiplus"),
+                OVERLAY_SOURCE,
+                Self::overlay_settings(None).as_ptr(),
+                null_mut(),
+            )
+        };
+        if overlay_source.is_null() {
+            return Err("unable to create text overlay source (is obs-text.dll present?)");
+        }
+
+        // CREATE SCENE: window capture at the origin, overlay on top
+        let scene = unsafe { libobs_sys::obs_scene_create(SCENE) };
+        if scene.is_null() {
+            return Err("unable to create scene");
+        }
+        unsafe {
+            libobs_sys::obs_scene_add(scene, video_source);
+            let item = libobs_sys::obs_scene_add(scene, overlay_source);
+            libobs_sys::obs_sceneitem_set_visible(item, false);
+            libobs_sys::obs_set_output_source(VIDEO_CHANNEL, libobs_sys::obs_scene_get_source(scene));
+        }
 
         // CREATE AUDIO ENCODER
         let mut data = ObsData::new();
@@ -245,6 +277,12 @@ impl InpRecorder {
                 .ok_or("got nullpointer instead of audio encoder")?;
             let video_source = NonNull::new(libobs_sys::obs_get_source_by_name(VIDEO_SOURCE))
                 .ok_or("got nullpointer instead of video source")?;
+            // obs_get_source_by_name takes a reference; obs_scene_release gives it back in Drop.
+            let scene_source = libobs_sys::obs_get_source_by_name(SCENE);
+            let scene = NonNull::new(libobs_sys::obs_scene_from_source(scene_source))
+                .ok_or("got nullpointer instead of scene")?;
+            let overlay_source = NonNull::new(libobs_sys::obs_get_source_by_name(OVERLAY_SOURCE))
+                .ok_or("got nullpointer instead of overlay source")?;
             let audio_source1 = NonNull::new(libobs_sys::obs_get_source_by_name(AUDIO_SOURCE1))
                 .ok_or("got nullpointer instead of audio source 1")?;
             let audio_source2 = NonNull::new(libobs_sys::obs_get_source_by_name(AUDIO_SOURCE2))
@@ -259,6 +297,8 @@ impl InpRecorder {
                 video_encoder,
                 audio_encoder,
                 video_source,
+                scene,
+                overlay_source,
                 audio_source1,
                 audio_source2,
                 audio_source3,
@@ -386,6 +426,28 @@ impl InpRecorder {
         adapters
     }
 
+    /// Settings for the `text_gdiplus` overlay source. White bold text with a
+    /// dark outline so it reads on any game footage.
+    fn overlay_settings(overlay: Option<&TextOverlay>) -> ObsData {
+        let mut font = ObsData::new();
+        font.set_string("face", overlay.map_or("Arial", |o| o.font_face.as_str()));
+        font.set_string("style", "Bold");
+        font.set_int("size", i64::from(overlay.map_or(24, |o| o.font_size)));
+        font.set_int("flags", 0);
+
+        let mut data = ObsData::new();
+        data.set_string("text", overlay.map_or("", |o| o.text.as_str()));
+        data.set_obj("font", &font);
+        data.set_int("color", 0x00FF_FFFF);
+        data.set_int("opacity", 100);
+        data.set_bool("outline", true);
+        data.set_int("outline_size", 3);
+        data.set_int("outline_color", 0);
+        data.set_int("outline_opacity", 100);
+        data.set_bool("read_from_file", false);
+        data
+    }
+
     fn check_thread_initialized() -> Result<(), &'static str> {
         match LIBOBS_THREAD.get() {
             Some(thread_id) if thread_id == &thread::current().id() => Ok(()),
@@ -474,7 +536,10 @@ impl InpRecorder {
                 // reconfigure video output pipeline after resetting the video backend
                 libobs_sys::obs_encoder_set_video(self.video_encoder.get().as_ptr(), libobs_sys::obs_get_video());
                 libobs_sys::obs_output_set_video_encoder(self.output.as_ptr(), self.video_encoder.get().as_ptr());
-                libobs_sys::obs_set_output_source(VIDEO_CHANNEL, self.video_source.as_ptr());
+                libobs_sys::obs_set_output_source(
+                    VIDEO_CHANNEL,
+                    libobs_sys::obs_scene_get_source(self.scene.as_ptr()),
+                );
             }
         }
 
@@ -527,6 +592,9 @@ impl InpRecorder {
         data.set_string("window", settings.window.get_libobs_window_id());
         unsafe { libobs_sys::obs_source_update(self.video_source.as_ptr(), data.as_ptr()) };
 
+        // set text overlay
+        self.configure_overlay(settings.text_overlay.as_ref(), settings.output_resolution);
+
         // set audio sources
         let audio_setting = settings.audio_source.unwrap_or(AudioSource::APPLICATION);
 
@@ -562,6 +630,60 @@ impl InpRecorder {
         Ok(())
     }
 
+    /// Show the overlay anchored to its corner, or hide it.
+    fn configure_overlay(&self, overlay: Option<&TextOverlay>, output: Resolution) {
+        let data = Self::overlay_settings(overlay);
+        unsafe { libobs_sys::obs_source_update(self.overlay_source.as_ptr(), data.as_ptr()) };
+
+        let item = unsafe { libobs_sys::obs_scene_find_source(self.scene.as_ptr(), OVERLAY_SOURCE) };
+        if item.is_null() {
+            return;
+        }
+        let Some(overlay) = overlay else {
+            unsafe { libobs_sys::obs_sceneitem_set_visible(item, false) };
+            return;
+        };
+
+        // Scene item positions are in canvas (base) pixels; the overlay size is
+        // given in output pixels, so scale the margin by the base/output ratio.
+        let ovi = Self::get_video_info().ok();
+        let (base_w, base_h) = ovi.map_or((output.width(), output.height()), |v| (v.base_width, v.base_height));
+        let scale = if output.height() == 0 { 1.0 } else { base_h as f32 / output.height() as f32 };
+        let margin = overlay.margin as f32 * scale;
+        let (align, x, y) = match overlay.corner {
+            Corner::TopLeft => (libobs_sys::OBS_ALIGN_TOP | libobs_sys::OBS_ALIGN_LEFT, margin, margin),
+            Corner::TopRight => (libobs_sys::OBS_ALIGN_TOP | libobs_sys::OBS_ALIGN_RIGHT, base_w as f32 - margin, margin),
+            Corner::BottomLeft => (
+                libobs_sys::OBS_ALIGN_BOTTOM | libobs_sys::OBS_ALIGN_LEFT,
+                margin,
+                base_h as f32 - margin,
+            ),
+            Corner::BottomRight => (
+                libobs_sys::OBS_ALIGN_BOTTOM | libobs_sys::OBS_ALIGN_RIGHT,
+                base_w as f32 - margin,
+                base_h as f32 - margin,
+            ),
+        };
+        let mut pos = libobs_sys::vec2::default();
+        pos.__bindgen_anon_1.ptr = [x, y];
+        let mut item_scale = libobs_sys::vec2::default();
+        item_scale.__bindgen_anon_1.ptr = [scale, scale];
+        unsafe {
+            libobs_sys::obs_sceneitem_set_alignment(item, align);
+            libobs_sys::obs_sceneitem_set_pos(item, &pos);
+            libobs_sys::obs_sceneitem_set_scale(item, &item_scale);
+            libobs_sys::obs_sceneitem_set_visible(item, true);
+        }
+    }
+
+    /// Replace the overlay text; cheap enough to call every second while
+    /// recording. Does nothing visible if no overlay was configured.
+    pub fn set_overlay_text(&self, text: &str) {
+        let mut data = ObsData::new();
+        data.set_string("text", text);
+        unsafe { libobs_sys::obs_source_update(self.overlay_source.as_ptr(), data.as_ptr()) };
+    }
+
     pub fn is_recording(&self) -> bool {
         unsafe { libobs_sys::obs_output_active(self.output.as_ptr()) }
     }
@@ -594,6 +716,8 @@ impl Drop for InpRecorder {
             libobs_sys::obs_output_release(self.output.as_ptr());
             // video
             libobs_sys::obs_encoder_release(self.video_encoder.get().as_ptr());
+            libobs_sys::obs_scene_release(self.scene.as_ptr());
+            libobs_sys::obs_source_release(self.overlay_source.as_ptr());
             libobs_sys::obs_source_release(self.video_source.as_ptr());
             // audio
             libobs_sys::obs_encoder_release(self.audio_encoder.as_ptr());

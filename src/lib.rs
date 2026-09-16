@@ -134,8 +134,18 @@ impl Recorder {
         }
     }
 
+    /// Replace the text of the overlay configured via
+    /// [`settings::RecorderSettings::set_text_overlay`]. Safe to call while recording.
+    pub fn set_overlay_text(&mut self, text: impl Into<String>) -> Result<()> {
+        match self.recorder.send(IpcCommand::SetOverlayText(text.into())) {
+            IpcResponse::Ok => Ok(()),
+            IpcResponse::Err(e) => Err(Box::new(Error::Recorder(e))),
+            _ => Err(Box::new(Error::ShouldNeverHappenNotifyMe)),
+        }
+    }
+
     pub fn is_recording(&mut self) -> Result<bool> {
-        match self.recorder.send(IpcCommand::StopRecording) {
+        match self.recorder.send(IpcCommand::IsRecording) {
             IpcResponse::Recording(recording) => Ok(recording),
             IpcResponse::Err(e) => Err(Box::new(Error::Recorder(e))),
             _ => Err(Box::new(Error::ShouldNeverHappenNotifyMe)),
