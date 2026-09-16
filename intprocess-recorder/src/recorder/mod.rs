@@ -180,7 +180,7 @@ impl InpRecorder {
 
         // CREATE AUDIO ENCODER
         let mut data = ObsData::new();
-        data.set_int("bitrate", 160);
+        data.set_int("bitrate", 192);
         let audio_encoder = unsafe {
             libobs_sys::obs_audio_encoder_create(get.c_str("ffmpeg_aac"), AUDIO_ENCODER, data.as_ptr(), 0, null_mut())
         };
@@ -325,7 +325,7 @@ impl InpRecorder {
     /// resetting audio after initialisation crashes libobs
     fn reset_audio() -> Result<(), String> {
         let ai = libobs_sys::obs_audio_info {
-            samples_per_sec: 44100,
+            samples_per_sec: 48000,
             speakers: libobs_sys::speaker_layout_SPEAKERS_STEREO,
         };
         let ok = unsafe { libobs_sys::obs_reset_audio(&ai) };
