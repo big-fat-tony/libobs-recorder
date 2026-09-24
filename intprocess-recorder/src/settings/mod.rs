@@ -32,6 +32,8 @@ pub struct RecorderSettings {
     pub(crate) text_overlay: Option<TextOverlay>,
     #[serde(default)]
     pub(crate) audio_tracks: Option<Vec<AudioSource>>,
+    #[serde(default)]
+    pub(crate) microphone_gain_db: Option<f32>,
 }
 
 impl RecorderSettings {
@@ -60,6 +62,7 @@ impl RecorderSettings {
             encoder: None,
             text_overlay: None,
             audio_tracks: None,
+            microphone_gain_db: None,
         }
     }
 
@@ -156,5 +159,16 @@ impl RecorderSettings {
 
     pub fn get_audio_tracks(&self) -> Option<&[AudioSource]> {
         self.audio_tracks.as_deref()
+    }
+
+    /// Amplify (or attenuate) the microphone by `db` before it is mixed into
+    /// its track, for when a headset sits far below the voices coming out of
+    /// the desktop. `None` (the default) records it as the device delivers it.
+    pub fn set_microphone_gain_db(&mut self, db: f32) {
+        self.microphone_gain_db = Some(db);
+    }
+
+    pub fn get_microphone_gain_db(&self) -> Option<f32> {
+        self.microphone_gain_db
     }
 }

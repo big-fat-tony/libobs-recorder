@@ -41,6 +41,10 @@ const AUDIO_ENCODERS: [*const i8; MAX_AUDIO_TRACKS] = [
     c"audio_encoder5".as_ptr().cast(),
     c"audio_encoder6".as_ptr().cast(),
 ];
+/// `window_priority` value asking the capture plugins to match a window by its
+/// executable (libobs `WINDOW_PRIORITY_EXE`) — a game's window class and title
+/// change between patches, its executable does not.
+const WINDOW_PRIORITY_EXE: i64 = 2;
 const VIDEO_SOURCE: *const i8 = c"video_source".as_ptr().cast();
 const SCENE: *const i8 = c"scene".as_ptr().cast();
 const OVERLAY_SOURCE: *const i8 = c"overlay_source".as_ptr().cast();
@@ -235,10 +239,7 @@ impl InpRecorder {
             }
             unsafe { libobs_sys::obs_encoder_set_audio(encoder, libobs_sys::obs_get_audio()) };
             if idx == 0 {
-                unsafe {
-                    libobs_sys::obs_output_set_audio_encoder(output, encoder, 0);
-                    libobs_sys::obs_output_set_mixers(output, 1);
-                }
+                unsafe { libobs_sys::obs_output_set_audio_encoder(output, encoder, 0) };
             }
         }
 
@@ -656,6 +657,10 @@ impl InpRecorder {
         if application != 0 {
             let mut data = ObsData::new();
             data.set_string("window", settings.window.get_libobs_window_id());
+            // Match the window by executable, as game_capture does by default:
+            // win-wasapi has no defaults, so it would otherwise match on the
+            // window class alone and find nothing whenever a game renames it.
+            data.set_int("priority", WINDOW_PRIORITY_EXE);
             unsafe { libobs_sys::obs_source_update(self.audio_source1.as_ptr(), data.as_ptr()) };
         }
         for (source, mixers, channel) in [
@@ -675,7 +680,10 @@ impl InpRecorder {
             let attached = if idx < tracks.len() { encoder.as_ptr() } else { null_mut() };
             unsafe { libobs_sys::obs_output_set_audio_encoder(self.output.as_ptr(), attached, idx) };
         }
-        unsafe { libobs_sys::obs_output_set_mixers(self.output.as_ptr(), (1 << tracks.len()) - 1) };
+
+        // Microphone level, relative to everything else in its track.
+        let gain = settings.microphone_gain_db.unwrap_or(0.0);
+        unsafe { libobs_sys::obs_source_set_volume(self.audio_source3.as_ptr(), 10f32.powf(gain / 20.0)) };
     }
 
     /// Show the overlay anchored to its corner, or hide it.
