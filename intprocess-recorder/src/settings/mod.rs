@@ -30,6 +30,8 @@ pub struct RecorderSettings {
     pub(crate) encoder: Option<Encoder>,
     #[serde(default)]
     pub(crate) text_overlay: Option<TextOverlay>,
+    #[serde(default)]
+    pub(crate) audio_tracks: Option<Vec<AudioSource>>,
 }
 
 impl RecorderSettings {
@@ -57,6 +59,7 @@ impl RecorderSettings {
             audio_source: None,
             encoder: None,
             text_overlay: None,
+            audio_tracks: None,
         }
     }
 
@@ -136,5 +139,22 @@ impl RecorderSettings {
 
     pub fn get_text_overlay(&self) -> Option<&TextOverlay> {
         self.text_overlay.as_ref()
+    }
+
+    /// Record one audio stream per entry instead of a single mixed one — e.g.
+    /// `[AudioSource::APPLICATION, AudioSource::ALL]` writes the captured
+    /// window's audio as track 1 and everything plus the microphone as track 2.
+    /// Takes precedence over [`Self::set_audio_source`]; entries beyond
+    /// [`MAX_AUDIO_TRACKS`] are ignored.
+    pub fn set_audio_tracks(&mut self, tracks: Vec<AudioSource>) {
+        self.audio_tracks = Some(tracks);
+    }
+
+    pub fn clear_audio_tracks(&mut self) {
+        self.audio_tracks = None;
+    }
+
+    pub fn get_audio_tracks(&self) -> Option<&[AudioSource]> {
+        self.audio_tracks.as_deref()
     }
 }

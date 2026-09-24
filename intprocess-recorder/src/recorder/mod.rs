@@ -30,7 +30,17 @@ const DEFAULT_PLUGIN_DATA_PATH: &str = "./data/obs-plugins/%module%/";
 // define null terminated libobs object names for ffi
 const OUTPUT: *const i8 = c"output".as_ptr().cast();
 const VIDEO_ENCODER: *const i8 = c"video_encoder".as_ptr().cast();
-const AUDIO_ENCODER: *const i8 = c"audio_encoder".as_ptr().cast();
+/// The most audio tracks libobs can mux into one recording.
+pub const MAX_AUDIO_TRACKS: usize = libobs_sys::MAX_AUDIO_MIXES as usize;
+/// One encoder per track; encoder `i` reads audio mix `i`.
+const AUDIO_ENCODERS: [*const i8; MAX_AUDIO_TRACKS] = [
+    c"audio_encoder1".as_ptr().cast(),
+    c"audio_encoder2".as_ptr().cast(),
+    c"audio_encoder3".as_ptr().cast(),
+    c"audio_encoder4".as_ptr().cast(),
+    c"audio_encoder5".as_ptr().cast(),
+    c"audio_encoder6".as_ptr().cast(),
+];
 const VIDEO_SOURCE: *const i8 = c"video_source".as_ptr().cast();
 const SCENE: *const i8 = c"scene".as_ptr().cast();
 const OVERLAY_SOURCE: *const i8 = c"overlay_source".as_ptr().cast();
@@ -62,7 +72,7 @@ type PhantomUnsend = std::marker::PhantomData<*mut ()>;
 pub struct InpRecorder {
     output: NonNull<libobs_sys::obs_output>,
     video_encoder: Cell<NonNull<libobs_sys::obs_encoder>>,
-    audio_encoder: NonNull<libobs_sys::obs_encoder>,
+    audio_encoders: [NonNull<libobs_sys::obs_encoder>; MAX_AUDIO_TRACKS],
     video_source: NonNull<libobs_sys::obs_source>,
     /// The window capture plus the (optional) text overlay, composited.
     scene: NonNull<libobs_sys::obs_scene>,
@@ -210,19 +220,26 @@ impl InpRecorder {
             libobs_sys::obs_set_output_source(VIDEO_CHANNEL, libobs_sys::obs_scene_get_source(scene));
         }
 
-        // CREATE AUDIO ENCODER
-        let mut data = ObsData::new();
-        data.set_int("bitrate", 192);
-        let audio_encoder = unsafe {
-            libobs_sys::obs_audio_encoder_create(get.c_str("ffmpeg_aac"), AUDIO_ENCODER, data.as_ptr(), 0, null_mut())
-        };
-        unsafe {
-            libobs_sys::obs_encoder_set_audio(audio_encoder, libobs_sys::obs_get_audio());
-            libobs_sys::obs_output_set_audio_encoder(
-                output,
-                audio_encoder,
-                0, // ignored since we only have 1 output
-            );
+        // CREATE AUDIO ENCODERS — one per possible track, each reading its own
+        // audio mix. `configure` attaches as many as the settings ask for; a
+        // single track (mix 0) is attached here so that recording without
+        // configuring still produces audio.
+        for (idx, name) in AUDIO_ENCODERS.into_iter().enumerate() {
+            let mut data = ObsData::new();
+            data.set_int("bitrate", 192);
+            let encoder = unsafe {
+                libobs_sys::obs_audio_encoder_create(get.c_str("ffmpeg_aac"), name, data.as_ptr(), idx, null_mut())
+            };
+            if encoder.is_null() {
+                return Err("unable to create audio encoder");
+            }
+            unsafe { libobs_sys::obs_encoder_set_audio(encoder, libobs_sys::obs_get_audio()) };
+            if idx == 0 {
+                unsafe {
+                    libobs_sys::obs_output_set_audio_encoder(output, encoder, 0);
+                    libobs_sys::obs_output_set_mixers(output, 1);
+                }
+            }
         }
 
         // CREATE AUDIO SOURCE 1
@@ -273,8 +290,15 @@ impl InpRecorder {
                 NonNull::new(libobs_sys::obs_get_encoder_by_name(VIDEO_ENCODER))
                     .ok_or("got nullpointer instead of video encoder")?,
             );
-            let audio_encoder = NonNull::new(libobs_sys::obs_get_encoder_by_name(AUDIO_ENCODER))
-                .ok_or("got nullpointer instead of audio encoder")?;
+            let mut encoders = Vec::with_capacity(MAX_AUDIO_TRACKS);
+            for name in AUDIO_ENCODERS {
+                encoders.push(
+                    NonNull::new(libobs_sys::obs_get_encoder_by_name(name))
+                        .ok_or("got nullpointer instead of audio encoder")?,
+                );
+            }
+            let audio_encoders: [NonNull<libobs_sys::obs_encoder>; MAX_AUDIO_TRACKS] =
+                encoders.try_into().map_err(|_| "wrong number of audio encoders")?;
             let video_source = NonNull::new(libobs_sys::obs_get_source_by_name(VIDEO_SOURCE))
                 .ok_or("got nullpointer instead of video source")?;
             // obs_get_source_by_name takes a reference; obs_scene_release gives it back in Drop.
@@ -295,7 +319,7 @@ impl InpRecorder {
             Ok(Self {
                 output,
                 video_encoder,
-                audio_encoder,
+                audio_encoders,
                 video_source,
                 scene,
                 overlay_source,
@@ -595,39 +619,63 @@ impl InpRecorder {
         // set text overlay
         self.configure_overlay(settings.text_overlay.as_ref(), settings.output_resolution);
 
-        // set audio sources
-        let audio_setting = settings.audio_source.unwrap_or(AudioSource::APPLICATION);
-
-        // audio source 1
-        let audio_source1 = match audio_setting {
-            AudioSource::APPLICATION => {
-                let mut data = ObsData::new();
-                data.set_string("window", settings.window.get_libobs_window_id());
-                unsafe { libobs_sys::obs_source_update(self.audio_source1.as_ptr(), data.as_ptr()) };
-
-                self.audio_source1.as_ptr()
-            }
-            _ => null_mut(),
-        };
-        unsafe { libobs_sys::obs_set_output_source(AUDIO_CHANNEL1, audio_source1) };
-
-        // audio source 2
-        let audio_source2 = match audio_setting {
-            AudioSource::SYSTEM | AudioSource::ALL => self.audio_source2.as_ptr(),
-            _ => null_mut(),
-        };
-        unsafe { libobs_sys::obs_set_output_source(AUDIO_CHANNEL2, audio_source2) };
-
-        // audio source 3
-        let audio_source3 = match audio_setting {
-            AudioSource::ALL => self.audio_source3.as_ptr(),
-            _ => null_mut(),
-        };
-        unsafe { libobs_sys::obs_set_output_source(AUDIO_CHANNEL3, audio_source3) };
+        // set audio tracks
+        self.configure_audio(settings);
 
         println!("configured");
 
         Ok(())
+    }
+
+    /// Route the three capture sources into one audio mix per requested track
+    /// and attach an encoder to each. A source feeds every track that names it,
+    /// via its mixer mask, so nothing is captured twice.
+    fn configure_audio(&self, settings: &RecorderSettings) {
+        let single = [settings.audio_source.unwrap_or(AudioSource::APPLICATION)];
+        let tracks: &[AudioSource] = match settings.audio_tracks.as_deref() {
+            Some(tracks) if !tracks.is_empty() => tracks,
+            _ => &single,
+        };
+        let tracks = &tracks[..tracks.len().min(MAX_AUDIO_TRACKS)];
+
+        // Which tracks each source belongs to, as a libobs mixer mask.
+        let (mut application, mut desktop, mut microphone) = (0u32, 0u32, 0u32);
+        for (idx, track) in tracks.iter().enumerate() {
+            let bit = 1 << idx;
+            match track {
+                AudioSource::NONE => {}
+                AudioSource::APPLICATION => application |= bit,
+                AudioSource::SYSTEM => desktop |= bit,
+                AudioSource::ALL => {
+                    desktop |= bit;
+                    microphone |= bit;
+                }
+            }
+        }
+
+        if application != 0 {
+            let mut data = ObsData::new();
+            data.set_string("window", settings.window.get_libobs_window_id());
+            unsafe { libobs_sys::obs_source_update(self.audio_source1.as_ptr(), data.as_ptr()) };
+        }
+        for (source, mixers, channel) in [
+            (self.audio_source1, application, AUDIO_CHANNEL1),
+            (self.audio_source2, desktop, AUDIO_CHANNEL2),
+            (self.audio_source3, microphone, AUDIO_CHANNEL3),
+        ] {
+            let attached = if mixers == 0 { null_mut() } else { source.as_ptr() };
+            unsafe {
+                libobs_sys::obs_source_set_audio_mixers(source.as_ptr(), mixers);
+                libobs_sys::obs_set_output_source(channel, attached);
+            }
+        }
+
+        // The muxer writes one stream per attached encoder, so clear the rest.
+        for (idx, encoder) in self.audio_encoders.iter().enumerate() {
+            let attached = if idx < tracks.len() { encoder.as_ptr() } else { null_mut() };
+            unsafe { libobs_sys::obs_output_set_audio_encoder(self.output.as_ptr(), attached, idx) };
+        }
+        unsafe { libobs_sys::obs_output_set_mixers(self.output.as_ptr(), (1 << tracks.len()) - 1) };
     }
 
     /// Show the overlay anchored to its corner, or hide it.
@@ -720,7 +768,9 @@ impl Drop for InpRecorder {
             libobs_sys::obs_source_release(self.overlay_source.as_ptr());
             libobs_sys::obs_source_release(self.video_source.as_ptr());
             // audio
-            libobs_sys::obs_encoder_release(self.audio_encoder.as_ptr());
+            for encoder in self.audio_encoders {
+                libobs_sys::obs_encoder_release(encoder.as_ptr());
+            }
             libobs_sys::obs_source_release(self.audio_source1.as_ptr());
             libobs_sys::obs_source_release(self.audio_source2.as_ptr());
             libobs_sys::obs_source_release(self.audio_source3.as_ptr());
