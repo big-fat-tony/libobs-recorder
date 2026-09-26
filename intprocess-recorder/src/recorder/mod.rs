@@ -681,9 +681,17 @@ impl InpRecorder {
             unsafe { libobs_sys::obs_output_set_audio_encoder(self.output.as_ptr(), attached, idx) };
         }
 
-        // Microphone level, relative to everything else in its track.
-        let gain = settings.microphone_gain_db.unwrap_or(0.0);
-        unsafe { libobs_sys::obs_source_set_volume(self.audio_source3.as_ptr(), 10f32.powf(gain / 20.0)) };
+        // Source levels. The desktop pad is what keeps a track that carries
+        // both the desktop and the microphone from clipping: Windows hands out
+        // a mix that already sits at full scale, so anything added to it
+        // overflows and is clamped, which is heard as crackle.
+        for (source, db) in [
+            (self.audio_source2, settings.desktop_gain_db),
+            (self.audio_source3, settings.microphone_gain_db),
+        ] {
+            let mul = 10f32.powf(db.unwrap_or(0.0) / 20.0);
+            unsafe { libobs_sys::obs_source_set_volume(source.as_ptr(), mul) };
+        }
     }
 
     /// Show the overlay anchored to its corner, or hide it.

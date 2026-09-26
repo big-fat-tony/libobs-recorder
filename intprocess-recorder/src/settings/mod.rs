@@ -34,6 +34,8 @@ pub struct RecorderSettings {
     pub(crate) audio_tracks: Option<Vec<AudioSource>>,
     #[serde(default)]
     pub(crate) microphone_gain_db: Option<f32>,
+    #[serde(default)]
+    pub(crate) desktop_gain_db: Option<f32>,
 }
 
 impl RecorderSettings {
@@ -63,6 +65,7 @@ impl RecorderSettings {
             text_overlay: None,
             audio_tracks: None,
             microphone_gain_db: None,
+            desktop_gain_db: None,
         }
     }
 
@@ -170,5 +173,17 @@ impl RecorderSettings {
 
     pub fn get_microphone_gain_db(&self) -> Option<f32> {
         self.microphone_gain_db
+    }
+
+    /// Attenuate (or amplify) the desktop capture by `db` before it is mixed.
+    /// A negative value buys the headroom a track needs when it carries the
+    /// microphone as well: Windows hands out a desktop mix that already sits
+    /// at full scale, and a sum past full scale is clamped, which crackles.
+    pub fn set_desktop_gain_db(&mut self, db: f32) {
+        self.desktop_gain_db = Some(db);
+    }
+
+    pub fn get_desktop_gain_db(&self) -> Option<f32> {
+        self.desktop_gain_db
     }
 }
