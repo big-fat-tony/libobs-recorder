@@ -22,6 +22,8 @@ pub enum IpcCommand {
     IsRecording,
     /// Replace the text of the configured overlay (see `RecorderSettings::set_text_overlay`).
     SetOverlayText(String),
+    /// Let go of the captured game's graphics hook (see `Recorder::release_capture`).
+    ReleaseCapture,
     Shutdown,
     Exit,
 }

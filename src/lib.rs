@@ -144,6 +144,17 @@ impl Recorder {
         }
     }
 
+    /// Let go of the captured game's graphics hook, so another recorder can
+    /// take it while this one finishes writing its file and exits. The
+    /// recording keeps running (against nothing) until it is stopped.
+    pub fn release_capture(&mut self) -> Result<()> {
+        match self.recorder.send(IpcCommand::ReleaseCapture) {
+            IpcResponse::Ok => Ok(()),
+            IpcResponse::Err(e) => Err(Box::new(Error::Recorder(e))),
+            _ => Err(Box::new(Error::ShouldNeverHappenNotifyMe)),
+        }
+    }
+
     pub fn is_recording(&mut self) -> Result<bool> {
         match self.recorder.send(IpcCommand::IsRecording) {
             IpcResponse::Recording(recording) => Ok(recording),

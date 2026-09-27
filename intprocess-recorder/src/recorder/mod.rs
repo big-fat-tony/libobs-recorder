@@ -748,6 +748,19 @@ impl InpRecorder {
         unsafe { libobs_sys::obs_source_update(self.overlay_source.as_ptr(), data.as_ptr()) };
     }
 
+    /// Let go of the game's graphics hook without tearing anything else down.
+    ///
+    /// Only one capture client can hold a game's hook at a time, so the next
+    /// recording cannot start until this one has let go — while the muxer
+    /// finishing the previous file, and this process exiting, are nobody's
+    /// business but our own. Releasing first turns a handover into the length
+    /// of a source update rather than the length of a teardown.
+    pub fn release_capture(&self) {
+        let mut data = ObsData::new();
+        data.set_string("window", "");
+        unsafe { libobs_sys::obs_source_update(self.video_source.as_ptr(), data.as_ptr()) };
+    }
+
     pub fn is_recording(&self) -> bool {
         unsafe { libobs_sys::obs_output_active(self.output.as_ptr()) }
     }
