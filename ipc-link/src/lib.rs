@@ -153,7 +153,9 @@ impl IpcLinkSlave<'_> {
 
     pub fn respond(&mut self, mut handler: impl FnMut(IpcCommand) -> Option<IpcResponse>) {
         loop {
-            let cmd = serde_json::from_str(self.read_line()).unwrap();
+            // A closed pipe means the other side is gone: leave quietly rather
+            // than panicking on the empty line its death leaves behind.
+            let Ok(cmd) = serde_json::from_str(self.read_line()) else { break };
 
             let Some(response) = handler(cmd) else { break };
             _ = serde_json::to_writer::<_, IpcResponse>(&mut self.tx, &response);

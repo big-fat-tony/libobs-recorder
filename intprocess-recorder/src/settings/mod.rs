@@ -1,5 +1,6 @@
 pub use adapter::{Adapter, AdapterId, AdapterType};
 pub use audio::AudioSource;
+pub use cover::Cover;
 pub use encoders::Encoder;
 pub use framerate::Framerate;
 pub use overlay::{Corner, TextOverlay};
@@ -9,6 +10,7 @@ pub use window::Window;
 
 mod adapter;
 mod audio;
+mod cover;
 mod encoders;
 mod framerate;
 mod overlay;
@@ -36,6 +38,8 @@ pub struct RecorderSettings {
     pub(crate) microphone_gain_db: Option<f32>,
     #[serde(default)]
     pub(crate) desktop_gain_db: Option<f32>,
+    #[serde(default)]
+    pub(crate) cover: Option<Cover>,
 }
 
 impl RecorderSettings {
@@ -66,6 +70,7 @@ impl RecorderSettings {
             audio_tracks: None,
             microphone_gain_db: None,
             desktop_gain_db: None,
+            cover: None,
         }
     }
 
@@ -185,5 +190,19 @@ impl RecorderSettings {
 
     pub fn get_desktop_gain_db(&self) -> Option<f32> {
         self.desktop_gain_db
+    }
+
+    /// Paint a filled rectangle over part of the capture — see [`Cover`].
+    /// `None` (the default) records the window as it is.
+    pub fn set_cover(&mut self, cover: Cover) {
+        self.cover = Some(cover);
+    }
+
+    pub fn clear_cover(&mut self) {
+        self.cover = None;
+    }
+
+    pub fn get_cover(&self) -> Option<&Cover> {
+        self.cover.as_ref()
     }
 }

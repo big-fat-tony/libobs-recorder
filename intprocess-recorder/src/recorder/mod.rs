@@ -8,7 +8,7 @@ use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use crate::settings::{
-    Adapter, AdapterId, AudioSource, Corner, Encoder, Framerate, RateControl, RecorderSettings, Resolution,
+    Adapter, AdapterId, AudioSource, Corner, Cover, Encoder, Framerate, RateControl, RecorderSettings, Resolution,
     TextOverlay,
 };
 use get::Get;
@@ -48,6 +48,7 @@ const WINDOW_PRIORITY_EXE: i64 = 2;
 const VIDEO_SOURCE: *const i8 = c"video_source".as_ptr().cast();
 const SCENE: *const i8 = c"scene".as_ptr().cast();
 const OVERLAY_SOURCE: *const i8 = c"overlay_source".as_ptr().cast();
+const COVER_SOURCE: *const i8 = c"cover_source".as_ptr().cast();
 const AUDIO_SOURCE1: *const i8 = c"audio_source1".as_ptr().cast();
 const AUDIO_SOURCE2: *const i8 = c"audio_source2".as_ptr().cast();
 const AUDIO_SOURCE3: *const i8 = c"audio_source3".as_ptr().cast();
@@ -78,8 +79,9 @@ pub struct InpRecorder {
     video_encoder: Cell<NonNull<libobs_sys::obs_encoder>>,
     audio_encoders: [NonNull<libobs_sys::obs_encoder>; MAX_AUDIO_TRACKS],
     video_source: NonNull<libobs_sys::obs_source>,
-    /// The window capture plus the (optional) text overlay, composited.
+    /// The window capture plus the (optional) cover and text overlay.
     scene: NonNull<libobs_sys::obs_scene>,
+    cover_source: NonNull<libobs_sys::obs_source>,
     overlay_source: NonNull<libobs_sys::obs_source>,
     audio_source1: NonNull<libobs_sys::obs_source>,
     audio_source2: NonNull<libobs_sys::obs_source>,
@@ -212,13 +214,31 @@ impl InpRecorder {
             return Err("unable to create text overlay source (is obs-text.dll present?)");
         }
 
-        // CREATE SCENE: window capture at the origin, overlay on top
+        // CREATE COVER: a filled rectangle for hiding part of the capture. It
+        // is a text source with no text: `text_gdiplus` draws a background of a
+        // given size, which is all a cover is, and it is already here for the
+        // overlay — where a colour source would mean vendoring another plugin.
+        let cover_source = unsafe {
+            libobs_sys::obs_source_create(
+                get.c_str("text_gdiplus"),
+                COVER_SOURCE,
+                Self::cover_settings(None).as_ptr(),
+                null_mut(),
+            )
+        };
+        if cover_source.is_null() {
+            return Err("unable to create the cover source (is obs-text.dll present?)");
+        }
+
+        // CREATE SCENE: window capture at the origin, cover and overlay on top
         let scene = unsafe { libobs_sys::obs_scene_create(SCENE) };
         if scene.is_null() {
             return Err("unable to create scene");
         }
         unsafe {
             libobs_sys::obs_scene_add(scene, video_source);
+            let cover_item = libobs_sys::obs_scene_add(scene, cover_source);
+            libobs_sys::obs_sceneitem_set_visible(cover_item, false);
             let item = libobs_sys::obs_scene_add(scene, overlay_source);
             libobs_sys::obs_sceneitem_set_visible(item, false);
             libobs_sys::obs_set_output_source(VIDEO_CHANNEL, libobs_sys::obs_scene_get_source(scene));
@@ -306,6 +326,8 @@ impl InpRecorder {
             let scene_source = libobs_sys::obs_get_source_by_name(SCENE);
             let scene = NonNull::new(libobs_sys::obs_scene_from_source(scene_source))
                 .ok_or("got nullpointer instead of scene")?;
+            let cover_source = NonNull::new(libobs_sys::obs_get_source_by_name(COVER_SOURCE))
+                .ok_or("got nullpointer instead of cover source")?;
             let overlay_source = NonNull::new(libobs_sys::obs_get_source_by_name(OVERLAY_SOURCE))
                 .ok_or("got nullpointer instead of overlay source")?;
             let audio_source1 = NonNull::new(libobs_sys::obs_get_source_by_name(AUDIO_SOURCE1))
@@ -323,6 +345,7 @@ impl InpRecorder {
                 audio_encoders,
                 video_source,
                 scene,
+                cover_source,
                 overlay_source,
                 audio_source1,
                 audio_source2,
@@ -617,6 +640,9 @@ impl InpRecorder {
         data.set_string("window", settings.window.get_libobs_window_id());
         unsafe { libobs_sys::obs_source_update(self.video_source.as_ptr(), data.as_ptr()) };
 
+        // paint over anything that should not be in the recording
+        self.configure_cover(settings.cover.as_ref());
+
         // set text overlay
         self.configure_overlay(settings.text_overlay.as_ref(), settings.output_resolution);
 
@@ -692,6 +718,56 @@ impl InpRecorder {
             let mul = 10f32.powf(db.unwrap_or(0.0) / 20.0);
             unsafe { libobs_sys::obs_source_set_volume(source.as_ptr(), mul) };
         }
+    }
+
+    /// Size and place the cover rectangle, or hide it.
+    fn configure_cover(&self, cover: Option<&Cover>) {
+        let item = unsafe { libobs_sys::obs_scene_find_source(self.scene.as_ptr(), COVER_SOURCE) };
+        if item.is_null() {
+            return;
+        }
+        let Some(cover) = cover.filter(|c| !c.is_empty()) else {
+            unsafe { libobs_sys::obs_sceneitem_set_visible(item, false) };
+            return;
+        };
+
+        // Scene items live on the canvas, which is the captured window's own
+        // size; a downscaled output scales the whole scene afterwards, so the
+        // fractions hold either way.
+        let ovi = Self::get_video_info().ok();
+        let (base_w, base_h) = ovi.map_or((1920, 1080), |v| (v.base_width, v.base_height));
+        let (x, y, width, height) = cover.in_pixels(base_w, base_h);
+
+        let data = Self::cover_settings(Some((cover, width, height)));
+        unsafe { libobs_sys::obs_source_update(self.cover_source.as_ptr(), data.as_ptr()) };
+
+        let mut pos = libobs_sys::vec2::default();
+        pos.__bindgen_anon_1.ptr = [x, y];
+        let mut scale = libobs_sys::vec2::default();
+        scale.__bindgen_anon_1.ptr = [1.0, 1.0];
+        unsafe {
+            libobs_sys::obs_sceneitem_set_alignment(item, libobs_sys::OBS_ALIGN_TOP | libobs_sys::OBS_ALIGN_LEFT);
+            libobs_sys::obs_sceneitem_set_pos(item, &pos);
+            libobs_sys::obs_sceneitem_set_scale(item, &scale);
+            libobs_sys::obs_sceneitem_set_visible(item, true);
+        }
+    }
+
+    /// A `text_gdiplus` source holding no text, sized to the cover and filled
+    /// with its colour — the background of an empty label is a rectangle.
+    fn cover_settings(cover: Option<(&Cover, u32, u32)>) -> ObsData {
+        let mut data = ObsData::new();
+        data.set_string("text", "");
+        data.set_bool("extents", true);
+        data.set_int("extents_cx", i64::from(cover.map_or(1, |(_, w, _)| w)));
+        data.set_int("extents_cy", i64::from(cover.map_or(1, |(_, _, h)| h)));
+        // The colour is stored the way libobs wants it (0xAABBGGRR); the text
+        // source takes the opacity separately, as a percentage.
+        let color = cover.map_or(0xFF00_0000, |(c, _, _)| c.color);
+        data.set_int("bk_color", i64::from(color & 0x00FF_FFFF));
+        data.set_int("bk_opacity", i64::from((color >> 24) * 100 / 255));
+        data.set_bool("read_from_file", false);
+        data
     }
 
     /// Show the overlay anchored to its corner, or hide it.
@@ -800,6 +876,7 @@ impl Drop for InpRecorder {
             for encoder in self.audio_encoders {
                 libobs_sys::obs_encoder_release(encoder.as_ptr());
             }
+            libobs_sys::obs_source_release(self.cover_source.as_ptr());
             libobs_sys::obs_source_release(self.audio_source1.as_ptr());
             libobs_sys::obs_source_release(self.audio_source2.as_ptr());
             libobs_sys::obs_source_release(self.audio_source3.as_ptr());
